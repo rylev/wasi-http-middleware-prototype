@@ -6,7 +6,6 @@ use bindings::exports::wasi::http::incoming_handler::Guest;
 use bindings::wasi::http::outgoing_handler as downstream;
 use bindings::wasi::http::types::{
     ErrorCode, FutureIncomingResponse, IncomingBody, IncomingRequest, IncomingResponse,
-    OutgoingBody, OutgoingRequest, OutgoingResponse, ResponseOutparam,
 };
 use bindings::wasi::io;
 use bindings::wasi::io::streams::{InputStream, OutputStream, StreamError};

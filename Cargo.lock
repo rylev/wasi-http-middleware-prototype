@@ -38,6 +38,7 @@ name = "business-logic"
 version = "0.1.0"
 dependencies = [
  "cargo-component-bindings",
+ "futures",
 ]
 
 [[package]]
