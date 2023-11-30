@@ -1,0 +1,10 @@
+[package]
+name = "middleware-prototype"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[workspace]
+members = ["components/*"]
+exclude = ["components/wit"]

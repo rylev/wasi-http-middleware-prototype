@@ -1,0 +1,22 @@
+[package]
+name = "business-logic"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cargo-component-bindings = "0.5.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.component]
+package = "component:business-logic"
+
+[package.metadata.component.target.dependencies]
+"wasi:http" = { path = "../wit/http" }
+"wasi:clocks" = { path = "../wit/clocks" }
+"wasi:io" = { path = "../wit/io" }
+"wasi:random" = { path = "../wit/random" }
+"wasi:cli" = { path = "../wit/cli" }
+"wasi:filesystem" = { path = "../wit/filesystem" }
+"wasi:sockets" = { path = "../wit/sockets" }
