@@ -48,6 +48,7 @@ async fn handle(request: IncomingRequest, response_out: ResponseOutparam) {
     let mut encoder = GzipEncoder::new(outgoing_body);
     while let Some(chunk) = downstream_body.next().await {
         let chunk = chunk.expect("TODO");
+        println!("Got chunk: {chunk:?}");
         encoder.write_all(&chunk).await.expect("TODO");
     }
 }
@@ -184,6 +185,7 @@ fn outgoing_body(body: OutgoingBody) -> impl futures::AsyncWrite {
             cx: &mut Context<'_>,
             buf: &[u8],
         ) -> Poll<std::io::Result<usize>> {
+            println!("Writing! {buf:?}");
             let this = self.get_mut();
             let (stream, _) = &this.payload.as_ref().unwrap();
             match stream.check_write() {
