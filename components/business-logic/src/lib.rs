@@ -26,7 +26,7 @@ async fn handle(_request: IncomingRequest, response_out: ResponseOutparam) {
     let mut body = outgoing_body(response.body().expect("response body was already taken"));
 
     ResponseOutparam::set(response_out, Ok(response));
-    body.write_all(b"Hello, world!").await.expect("TODO");
+    body.write_all(b"Hello, world!\n").await.expect("TODO");
 }
 
 static WAKERS: Mutex<Vec<(io::poll::Pollable, Waker)>> = Mutex::new(Vec::new());

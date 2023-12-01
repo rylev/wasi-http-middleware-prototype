@@ -1,7 +1,7 @@
-use async_compression::futures::write::GzipEncoder;
-
 cargo_component_bindings::generate!();
 
+use anyhow::{anyhow, Context as _};
+use async_compression::futures::write::GzipEncoder;
 use bindings::exports::wasi::http::incoming_handler::Guest;
 use bindings::wasi::http::outgoing_handler as downstream;
 use bindings::wasi::http::types::{
@@ -10,9 +10,7 @@ use bindings::wasi::http::types::{
 };
 use bindings::wasi::io;
 use bindings::wasi::io::streams::{InputStream, OutputStream, StreamError};
-
 use futures::{stream, AsyncWriteExt, Stream, StreamExt};
-
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 
@@ -20,37 +18,47 @@ struct Component;
 
 impl Guest for Component {
     fn handle(request: IncomingRequest, response_out: ResponseOutparam) {
-        run(handle(request, response_out))
+        run(handle(request, response_out)).unwrap();
     }
 }
 
-async fn handle(request: IncomingRequest, response_out: ResponseOutparam) {
+async fn handle(request: IncomingRequest, response_out: ResponseOutparam) -> anyhow::Result<()> {
     let request = {
         let new = OutgoingRequest::new(request.headers());
         new.set_path_with_query(request.path_with_query().as_deref())
-            .expect("TODO");
-        new.set_scheme(Some(&Scheme::Http)).expect("TODO");
+            .map_err(|_| anyhow!("failed to set request path and query"))?;
+        new.set_scheme(Some(&Scheme::Http))
+            .map_err(|_| anyhow!("failed to set request scheme"))?;
         new.set_authority(request.authority().as_deref())
-            .expect("TODO");
+            .map_err(|_| anyhow!("failed to set request authority"))?;
         new
     };
-    let response = incoming_response(downstream::handle(request, None).expect("TODO"))
-        .await
-        .expect("TODO");
-    let mut downstream_body = incoming_body(response.consume().expect("TODO"));
+    let response = incoming_response(downstream::handle(request, None)?).await?;
+    let mut downstream_body = incoming_body(
+        response
+            .consume()
+            .expect("downstream body was unexpectedly consumed before"),
+    );
+
     let response = {
         let new = OutgoingResponse::new(response.headers());
-        new.set_status_code(response.status()).expect("TODO");
+        new.set_status_code(response.status())
+            .map_err(|_| anyhow!("failed to set response status"))?;
         new
     };
-    let outgoing_body = outgoing_body(response.body().expect("TODO"));
+    let outgoing_body = outgoing_body(
+        response
+            .body()
+            .expect("response body was unexpected consumed before"),
+    );
     ResponseOutparam::set(response_out, Ok(response));
     let mut encoder = GzipEncoder::new(outgoing_body);
     while let Some(chunk) = downstream_body.next().await {
-        let chunk = chunk.expect("TODO");
-        println!("Got chunk: {chunk:?}");
-        encoder.write_all(&chunk).await.expect("TODO");
+        let chunk = chunk.map_err(|e| anyhow!("failed to get downstream body chunk {e:?}"))?;
+        encoder.write_all(&chunk).await?;
     }
+    encoder.flush().await?;
+    Ok(())
 }
 
 const READ_SIZE: u64 = 16 * 1024;
@@ -185,7 +193,6 @@ fn outgoing_body(body: OutgoingBody) -> impl futures::AsyncWrite {
             cx: &mut Context<'_>,
             buf: &[u8],
         ) -> Poll<std::io::Result<usize>> {
-            println!("Writing! {buf:?}");
             let this = self.get_mut();
             let (stream, _) = &this.payload.as_ref().unwrap();
             match stream.check_write() {
@@ -218,14 +225,7 @@ fn outgoing_body(body: OutgoingBody) -> impl futures::AsyncWrite {
             let this = self.get_mut();
             let (stream, _) = this.payload.as_ref().unwrap();
             match stream.flush() {
-                Ok(()) => {
-                    WAKERS
-                        .lock()
-                        .unwrap()
-                        .push((stream.subscribe(), cx.waker().clone()));
-
-                    Poll::Pending
-                }
+                Ok(()) => Poll::Ready(Ok(())),
                 Err(StreamError::Closed) => Poll::Ready(Ok(())),
                 Err(StreamError::LastOperationFailed(e)) => Poll::Ready(Err(std::io::Error::new(
                     std::io::ErrorKind::Other,

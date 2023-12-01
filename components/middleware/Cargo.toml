@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0"
 cargo-component-bindings = "0.5.0"
 async-compression = { version = "0.4", features = ["futures-io", "gzip"] }
 futures = "0.3.28"

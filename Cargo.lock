@@ -1059,6 +1059,7 @@ dependencies = [
 name = "middleware"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-compression",
  "cargo-component-bindings",
  "futures",

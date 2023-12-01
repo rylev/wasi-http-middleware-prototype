@@ -64,7 +64,14 @@ async fn main() {
         .await
         .unwrap();
     let response = rx.await;
-    println!("{:?}", response.unwrap().unwrap().body_mut().frame().await);
+    let mut response = response.unwrap().unwrap();
+    let mut body = Vec::<u8>::new();
+    while let Some(f) = response.body_mut().frame().await {
+        if let Some(d) = f.unwrap().data_ref() {
+            body.extend(d)
+        }
+    }
+    println!("{body:#x?}");
 }
 
 struct Context {
