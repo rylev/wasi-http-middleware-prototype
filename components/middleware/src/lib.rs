@@ -6,6 +6,7 @@ use bindings::exports::wasi::http::incoming_handler::Guest;
 use bindings::wasi::http::outgoing_handler as downstream;
 use bindings::wasi::http::types::{
     ErrorCode, FutureIncomingResponse, IncomingBody, IncomingRequest, IncomingResponse,
+    OutgoingBody, OutgoingRequest, OutgoingResponse, ResponseOutparam, Scheme,
 };
 use bindings::wasi::io;
 use bindings::wasi::io::streams::{InputStream, OutputStream, StreamError};
@@ -26,6 +27,11 @@ impl Guest for Component {
 async fn handle(request: IncomingRequest, response_out: ResponseOutparam) {
     let request = {
         let new = OutgoingRequest::new(request.headers());
+        new.set_path_with_query(request.path_with_query().as_deref())
+            .expect("TODO");
+        new.set_scheme(Some(&Scheme::Http)).expect("TODO");
+        new.set_authority(request.authority().as_deref())
+            .expect("TODO");
         new
     };
     let response = incoming_response(downstream::handle(request, None).expect("TODO"))

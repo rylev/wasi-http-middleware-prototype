@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+wasmtime = { version = "15.0", features = ["component-model"] }
+wasmtime-wasi = "15.0"
+wasmtime-wasi-http = "15.0"
+tokio = { version = "1.0", features = ["macros"] }
+http = "0.2.11"
+http-body-util = "0.1.0-rc.2"
+env_logger = "0.10"
 
 [workspace]
 members = ["components/*"]
