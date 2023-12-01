@@ -1,77 +1,98 @@
-use std::{sync::Arc, time::Duration};
-
+use anyhow::Context as _;
+use http::Response;
 use http_body_util::BodyExt;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use wasmtime::{
-    component::{Component, Linker},
+    component::{Component, Linker, Resource},
     Config, Engine, Store,
 };
 use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi_http::{
-    proxy::Proxy,
+    proxy::{
+        exports::wasi::http::incoming_handler::{IncomingRequest, ResponseOutparam},
+        Proxy,
+    },
     types::{default_send_request, IncomingResponseInternal},
     WasiHttpCtx, WasiHttpView,
 };
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     env_logger::init();
+
     let mut args = std::env::args().skip(1);
-    let component_path = args.next().expect("missing arg with path to component");
-    let business_path = args.next().expect("missing arg with path to component");
-    let middleware_bytes = std::fs::read(component_path).unwrap();
-    let business_bytes = std::fs::read(business_path).unwrap();
-    let mut config = Config::new();
-    config.wasm_component_model(true);
-    config.async_support(true);
+    let middleware_path = args
+        .next()
+        .context("missing arg with path to middleware component")?;
+    let business_path = args
+        .next()
+        .context("missing arg with path to business logic component")?;
 
-    let engine = Engine::new(&config).unwrap();
-    let middleware = Component::new(&engine, &middleware_bytes).unwrap();
-    let business = Component::new(&engine, &business_bytes).unwrap();
-    let mut linker = Linker::<Context>::new(&engine);
-    linker.allow_shadowing(true);
-    wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker).unwrap();
-    wasmtime_wasi_http::proxy::add_to_linker(&mut linker).unwrap();
-
-    let (tx, rx) = tokio::sync::oneshot::channel();
+    // Configure the context
     let mut context = Context::new();
-    let response = context.new_response_outparam(tx).unwrap();
-    let body = http_body_util::combinators::BoxBody::new(String::from("Incoming body"))
-        .map_err(|_| wasmtime_wasi_http::bindings::http::types::ErrorCode::InternalError(None))
-        .boxed();
-    let req = http::request::Builder::new()
-        .uri("http://localhost:3000/")
-        .body(body)
-        .expect("TODO");
-    let request = context.new_incoming_request(req).unwrap();
-    let mut middleware_store = Store::new(&engine, context);
-    let middleware_instance = linker
-        .instantiate_async(&mut middleware_store, &middleware)
-        .await
-        .unwrap();
-    let middleware_proxy = Proxy::new(&mut middleware_store, &middleware_instance).unwrap();
+    let request = context.create_request("Hello, world!")?;
+    let (out, response) = context.create_response()?;
 
-    let mut other_store = Store::new(&engine, Context::new());
-    let business_instance = linker
-        .instantiate_async(&mut other_store, &business)
-        .await
-        .unwrap();
-    let proxy = Proxy::new(&mut other_store, &business_instance).unwrap();
-    middleware_store.data_mut().proxy = Some(Arc::new(Mutex::new((other_store, proxy))));
+    let runtime = Runtime::new()?;
+    // Configure the middleware
+    let mut middleware_store = runtime.store(context);
+    let middleware_proxy = runtime
+        .proxy(&mut middleware_store, &std::fs::read(middleware_path)?)
+        .await?;
+
+    // Configure the business logic
+    let mut business_store = runtime.store(Context::new());
+    let business_proxy = runtime
+        .proxy(&mut business_store, &std::fs::read(business_path)?)
+        .await?;
+    middleware_store.data_mut().proxy =
+        Some(Arc::new(Mutex::new((business_store, business_proxy))));
+
+    // Make the actual request
     middleware_proxy
         .wasi_http_incoming_handler()
-        .call_handle(&mut middleware_store, request, response)
-        .await
-        .unwrap();
-    let response = rx.await;
-    let mut response = response.unwrap().unwrap();
-    let mut body = Vec::<u8>::new();
-    while let Some(f) = response.body_mut().frame().await {
-        if let Some(d) = f.unwrap().data_ref() {
-            body.extend(d)
-        }
+        .call_handle(&mut middleware_store, request, out)
+        .await?;
+
+    // Get the response
+    let response = response.await?;
+    let body = response.body().to_vec();
+    println!("{body:x?}");
+    Ok(())
+}
+
+struct Runtime {
+    engine: Engine,
+    linker: Linker<Context>,
+}
+
+impl Runtime {
+    fn new() -> anyhow::Result<Self> {
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        config.async_support(true);
+        let engine = Engine::new(&config)?;
+
+        let mut linker = Linker::<Context>::new(&engine);
+        linker.allow_shadowing(true);
+        wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
+        wasmtime_wasi_http::proxy::add_to_linker(&mut linker)?;
+        Ok(Self { engine, linker })
     }
-    println!("{body:#x?}");
+
+    fn store(&self, context: Context) -> Store<Context> {
+        Store::new(&self.engine, context)
+    }
+
+    async fn proxy(&self, store: &mut Store<Context>, component: &[u8]) -> anyhow::Result<Proxy> {
+        let instance = self
+            .linker
+            .instantiate_async(&mut *store, &Component::new(&self.engine, component)?)
+            .await
+            .unwrap();
+        Proxy::new(store, &instance)
+    }
 }
 
 struct Context {
@@ -94,6 +115,40 @@ impl Context {
             http,
             proxy: None,
         }
+    }
+
+    fn create_request(
+        &mut self,
+        body: impl Into<String>,
+    ) -> anyhow::Result<Resource<IncomingRequest>> {
+        let body = http_body_util::combinators::BoxBody::new(body.into())
+            .map_err(|_| wasmtime_wasi_http::bindings::http::types::ErrorCode::InternalError(None))
+            .boxed();
+        let req = http::request::Builder::new()
+            .uri("http://localhost:3000/")
+            .body(body)?;
+
+        self.new_incoming_request(req)
+    }
+
+    fn create_response(
+        &mut self,
+    ) -> anyhow::Result<(
+        Resource<ResponseOutparam>,
+        impl std::future::Future<Output = anyhow::Result<Response<bytes::Bytes>>>,
+    )> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        Ok((self.new_response_outparam(tx)?, async {
+            let response = rx.await;
+            let response = response??;
+            let (parts, body) = response.into_parts();
+            let body = body
+                .collect()
+                .await
+                .map(|c| c.to_bytes())
+                .map_err(|e| anyhow::anyhow!(e))?;
+            Ok(Response::from_parts(parts, body))
+        }))
     }
 }
 

@@ -1,6 +1,6 @@
 cargo_component_bindings::generate!();
 
-use anyhow::{anyhow, Context as _};
+use anyhow::anyhow;
 use async_compression::futures::write::GzipEncoder;
 use bindings::exports::wasi::http::incoming_handler::Guest;
 use bindings::wasi::http::outgoing_handler as downstream;
@@ -23,31 +23,19 @@ impl Guest for Component {
 }
 
 async fn handle(request: IncomingRequest, response_out: ResponseOutparam) -> anyhow::Result<()> {
-    let mut incoming_body = incoming_body_stream(request.consume().expect("TODO"));
-    let (request, mut outgoing_body) = {
-        let new = OutgoingRequest::new(request.headers());
-        new.set_path_with_query(request.path_with_query().as_deref())
-            .map_err(|_| anyhow!("failed to set request path and query"))?;
-        new.set_scheme(Some(&Scheme::Http))
-            .map_err(|_| anyhow!("failed to set request scheme"))?;
-        new.set_authority(request.authority().as_deref())
-            .map_err(|_| anyhow!("failed to set request authority"))?;
-        let mut body = outgoing_body_write(new.body().expect("TODO"));
-        (new, body)
-    };
-    while let Some(chunk) = incoming_body.next().await {
-        let chunk = chunk.map_err(|e| anyhow!("failed to get incoming body chunk {e:?}"))?;
-        outgoing_body.write_all(&chunk).await;
-    }
-    // Drop the outgoing body so that the outgoing request can complete - otherwise we deadlock
-    drop(outgoing_body);
+    // Convert the incoming request to an outgoing one
+    let request = incoming_to_outgoing(request).await?;
+
+    // Make a call to the downstream handler
     let response = incoming_response(downstream::handle(request, None)?).await?;
+
     let mut downstream_body = incoming_body_stream(
         response
             .consume()
             .expect("downstream body was unexpectedly consumed before"),
     );
 
+    // Convert the incoming response to an outgoing response
     let response = {
         let new = OutgoingResponse::new(response.headers());
         new.set_status_code(response.status())
@@ -60,13 +48,37 @@ async fn handle(request: IncomingRequest, response_out: ResponseOutparam) -> any
             .expect("response body was unexpected consumed before"),
     );
     ResponseOutparam::set(response_out, Ok(response));
+
+    // Gzip the body
     let mut encoder = GzipEncoder::new(outgoing_body);
     while let Some(chunk) = downstream_body.next().await {
         let chunk = chunk.map_err(|e| anyhow!("failed to get downstream body chunk {e:?}"))?;
         encoder.write_all(&chunk).await?;
     }
     encoder.flush().await?;
+
     Ok(())
+}
+
+async fn incoming_to_outgoing(request: IncomingRequest) -> Result<OutgoingRequest, anyhow::Error> {
+    let mut incoming_body = incoming_body_stream(request.consume().expect("TODO"));
+    let (request, mut outgoing_body) = {
+        let new = OutgoingRequest::new(request.headers());
+        new.set_path_with_query(request.path_with_query().as_deref())
+            .map_err(|_| anyhow!("failed to set request path and query"))?;
+        new.set_scheme(Some(&Scheme::Http))
+            .map_err(|_| anyhow!("failed to set request scheme"))?;
+        new.set_authority(request.authority().as_deref())
+            .map_err(|_| anyhow!("failed to set request authority"))?;
+        let body = outgoing_body_write(new.body().expect("TODO"));
+        (new, body)
+    };
+    while let Some(chunk) = incoming_body.next().await {
+        let chunk = chunk.map_err(|e| anyhow!("failed to get incoming body chunk {e:?}"))?;
+        outgoing_body.write_all(&chunk).await?;
+    }
+    drop(outgoing_body);
+    Ok(request)
 }
 
 const READ_SIZE: u64 = 16 * 1024;
@@ -230,7 +242,7 @@ fn outgoing_body_write(body: OutgoingBody) -> impl futures::AsyncWrite {
 
         fn poll_flush(
             self: std::pin::Pin<&mut Self>,
-            cx: &mut Context<'_>,
+            _cx: &mut Context<'_>,
         ) -> Poll<std::io::Result<()>> {
             let this = self.get_mut();
             let (stream, _) = this.payload.as_ref().unwrap();

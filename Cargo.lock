@@ -147,6 +147,7 @@ checksum = "7f30e7476521f6f8af1a1c4c0b8cc94f0bee37d91763d0ca2665f299b6cd8aec"
 name = "business-logic"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "cargo-component-bindings",
  "futures",
 ]
@@ -1069,6 +1070,8 @@ dependencies = [
 name = "middleware-prototype"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "bytes",
  "env_logger",
  "http",
  "http-body-util",

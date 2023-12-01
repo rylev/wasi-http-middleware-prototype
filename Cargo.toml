@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0"
+bytes = "1.5"
 wasmtime = { version = "15.0", features = ["component-model"] }
 wasmtime-wasi = "15.0"
 wasmtime-wasi-http = "15.0"

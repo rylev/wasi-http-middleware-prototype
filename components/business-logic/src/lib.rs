@@ -19,25 +19,34 @@ struct Component;
 
 impl Guest for Component {
     fn handle(request: IncomingRequest, response_out: ResponseOutparam) {
-        run(handle(request, response_out))
+        run(handle(request, response_out)).unwrap();
     }
 }
 
-async fn handle(request: IncomingRequest, response_out: ResponseOutparam) {
-    let mut body = incoming_body(request.consume().expect("TODO"));
-    let mut b = Vec::new();
-    while let Some(chunk) = body.next().await {
-        let chunk = chunk.unwrap();
-        b.extend(&chunk);
-    }
-    println!("Body: {}", String::from_utf8_lossy(&b));
+async fn handle(request: IncomingRequest, response_out: ResponseOutparam) -> anyhow::Result<()> {
+    // Extend incoming body with an "!"
+    let mut incoming_body = collect_body(request).await?;
+    incoming_body.extend(b"!");
+
+    // Set the response
     let response = OutgoingResponse::new(
         Headers::from_list(&[("content-type".to_string(), b"text/plain".to_vec())]).expect("TODO"),
     );
     let mut body = outgoing_body(response.body().expect("response body was already taken"));
-
     ResponseOutparam::set(response_out, Ok(response));
-    body.write_all(b"Hello, world!\n").await.expect("TODO");
+    body.write_all(&incoming_body).await?;
+
+    Ok(())
+}
+
+async fn collect_body(request: IncomingRequest) -> anyhow::Result<Vec<u8>> {
+    let mut body = incoming_body(request.consume().expect("TODO"));
+    let mut b = Vec::new();
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        b.extend(&chunk);
+    }
+    Ok(b)
 }
 
 static WAKERS: Mutex<Vec<(io::poll::Pollable, Waker)>> = Mutex::new(Vec::new());
