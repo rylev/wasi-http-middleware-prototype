@@ -23,7 +23,8 @@ impl Guest for Component {
 }
 
 async fn handle(request: IncomingRequest, response_out: ResponseOutparam) -> anyhow::Result<()> {
-    let request = {
+    let mut incoming_body = incoming_body_stream(request.consume().expect("TODO"));
+    let (request, mut outgoing_body) = {
         let new = OutgoingRequest::new(request.headers());
         new.set_path_with_query(request.path_with_query().as_deref())
             .map_err(|_| anyhow!("failed to set request path and query"))?;
@@ -31,10 +32,17 @@ async fn handle(request: IncomingRequest, response_out: ResponseOutparam) -> any
             .map_err(|_| anyhow!("failed to set request scheme"))?;
         new.set_authority(request.authority().as_deref())
             .map_err(|_| anyhow!("failed to set request authority"))?;
-        new
+        let mut body = outgoing_body_write(new.body().expect("TODO"));
+        (new, body)
     };
+    while let Some(chunk) = incoming_body.next().await {
+        let chunk = chunk.map_err(|e| anyhow!("failed to get incoming body chunk {e:?}"))?;
+        outgoing_body.write_all(&chunk).await;
+    }
+    // Drop the outgoing body so that the outgoing request can complete - otherwise we deadlock
+    drop(outgoing_body);
     let response = incoming_response(downstream::handle(request, None)?).await?;
-    let mut downstream_body = incoming_body(
+    let mut downstream_body = incoming_body_stream(
         response
             .consume()
             .expect("downstream body was unexpectedly consumed before"),
@@ -46,7 +54,7 @@ async fn handle(request: IncomingRequest, response_out: ResponseOutparam) -> any
             .map_err(|_| anyhow!("failed to set response status"))?;
         new
     };
-    let outgoing_body = outgoing_body(
+    let outgoing_body = outgoing_body_write(
         response
             .body()
             .expect("response body was unexpected consumed before"),
@@ -65,7 +73,9 @@ const READ_SIZE: u64 = 16 * 1024;
 
 static WAKERS: Mutex<Vec<(io::poll::Pollable, Waker)>> = Mutex::new(Vec::new());
 
-fn incoming_body(body: IncomingBody) -> impl Stream<Item = Result<Vec<u8>, io::streams::Error>> {
+fn incoming_body_stream(
+    body: IncomingBody,
+) -> impl Stream<Item = Result<Vec<u8>, io::streams::Error>> {
     struct Incoming(Option<(InputStream, IncomingBody)>);
 
     impl Drop for Incoming {
@@ -168,7 +178,7 @@ fn run<T>(future: impl std::future::Future<Output = T>) -> T {
     }
 }
 
-fn outgoing_body(body: OutgoingBody) -> impl futures::AsyncWrite {
+fn outgoing_body_write(body: OutgoingBody) -> impl futures::AsyncWrite {
     struct Outgoing {
         payload: Option<(OutputStream, OutgoingBody)>,
     }

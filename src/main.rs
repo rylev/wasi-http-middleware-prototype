@@ -36,7 +36,7 @@ async fn main() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let mut context = Context::new();
     let response = context.new_response_outparam(tx).unwrap();
-    let body = http_body_util::combinators::BoxBody::new(String::new())
+    let body = http_body_util::combinators::BoxBody::new(String::from("Incoming body"))
         .map_err(|_| wasmtime_wasi_http::bindings::http::types::ErrorCode::InternalError(None))
         .boxed();
     let req = http::request::Builder::new()
@@ -141,18 +141,7 @@ impl WasiHttpView for Context {
             let (store, proxy) = &mut *proxy.lock().await;
             let ctx = store.data_mut();
             let response = ctx.new_response_outparam(tx).unwrap();
-            let req = {
-                let body = http_body_util::combinators::BoxBody::new(String::new())
-                    .map_err(|_| {
-                        wasmtime_wasi_http::bindings::http::types::ErrorCode::InternalError(None)
-                    })
-                    .boxed();
-                let req = http::request::Builder::new()
-                    .uri("http://localhost:3000/")
-                    .body(body)
-                    .expect("TODO");
-                ctx.new_incoming_request(req).unwrap()
-            };
+            let req = ctx.new_incoming_request(request.request).unwrap();
             proxy
                 .wasi_http_incoming_handler()
                 .call_handle(store, req, response)

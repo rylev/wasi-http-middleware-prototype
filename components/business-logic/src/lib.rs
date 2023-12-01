@@ -2,15 +2,18 @@ cargo_component_bindings::generate!();
 
 use bindings::exports::wasi::http::incoming_handler::Guest;
 use bindings::wasi::http::types::{
-    Headers, IncomingRequest, OutgoingBody, OutgoingResponse, ResponseOutparam,
+    Headers, IncomingBody, IncomingRequest, InputStream, OutgoingBody, OutgoingResponse,
+    ResponseOutparam,
 };
 use bindings::wasi::io;
 use bindings::wasi::io::streams::{OutputStream, StreamError};
 
-use futures::AsyncWriteExt;
+use futures::{stream, AsyncWriteExt, Stream, StreamExt};
 
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
+
+const READ_SIZE: u64 = 16 * 1024;
 
 struct Component;
 
@@ -19,7 +22,15 @@ impl Guest for Component {
         run(handle(request, response_out))
     }
 }
-async fn handle(_request: IncomingRequest, response_out: ResponseOutparam) {
+
+async fn handle(request: IncomingRequest, response_out: ResponseOutparam) {
+    let mut body = incoming_body(request.consume().expect("TODO"));
+    let mut b = Vec::new();
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk.unwrap();
+        b.extend(&chunk);
+    }
+    println!("Body: {}", String::from_utf8_lossy(&b));
     let response = OutgoingResponse::new(
         Headers::from_list(&[("content-type".to_string(), b"text/plain".to_vec())]).expect("TODO"),
     );
@@ -75,6 +86,7 @@ fn run<T>(future: impl std::future::Future<Output = T>) -> T {
         }
     }
 }
+
 fn outgoing_body(body: OutgoingBody) -> impl futures::AsyncWrite {
     struct Outgoing {
         payload: Option<(OutputStream, OutgoingBody)>,
@@ -156,4 +168,44 @@ fn outgoing_body(body: OutgoingBody) -> impl futures::AsyncWrite {
         }
     }
     outgoing
+}
+
+fn incoming_body(body: IncomingBody) -> impl Stream<Item = Result<Vec<u8>, io::streams::Error>> {
+    struct Incoming(Option<(InputStream, IncomingBody)>);
+
+    impl Drop for Incoming {
+        fn drop(&mut self) {
+            if let Some((stream, body)) = self.0.take() {
+                drop(stream);
+                IncomingBody::finish(body);
+            }
+        }
+    }
+
+    stream::poll_fn({
+        let stream = body.stream().expect("response body should be readable");
+        let pair = Incoming(Some((stream, body)));
+
+        move |context| {
+            if let Some((stream, _)) = &pair.0 {
+                match stream.read(READ_SIZE) {
+                    Ok(buffer) => {
+                        if buffer.is_empty() {
+                            WAKERS
+                                .lock()
+                                .unwrap()
+                                .push((stream.subscribe(), context.waker().clone()));
+                            Poll::Pending
+                        } else {
+                            Poll::Ready(Some(Ok(buffer)))
+                        }
+                    }
+                    Err(StreamError::Closed) => Poll::Ready(None),
+                    Err(StreamError::LastOperationFailed(error)) => Poll::Ready(Some(Err(error))),
+                }
+            } else {
+                Poll::Ready(None)
+            }
+        }
+    })
 }
